@@ -254,6 +254,16 @@ def gather_host_info(ip, username, key_path, timeout):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+    # Disable SHA1-based algorithms that fail on FIPS / newer OpenSSL
+    disabled_algorithms = {
+        "keys": ["ssh-rsa", "ssh-dss"],
+        "kex": [
+            "diffie-hellman-group14-sha1",
+            "diffie-hellman-group1-sha1",
+            "diffie-hellman-group-exchange-sha1",
+        ],
+    }
+
     try:
         client.connect(
             ip,
@@ -263,6 +273,7 @@ def gather_host_info(ip, username, key_path, timeout):
             auth_timeout=timeout,
             look_for_keys=True,
             allow_agent=True,
+            disabled_algorithms=disabled_algorithms,
         )
     except paramiko.AuthenticationException:
         logger.warning("Authentication failed for %s — skipping", ip)
