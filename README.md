@@ -43,7 +43,7 @@ python3 discover.py 192.168.1.0/24 -v
 
 ### CSV Columns
 
-`ip`, `hostname`, `os`, `kernel`, `cpu_model`, `cpu_cores`, `memory_total_mb`, `memory_used_mb`, `memory_pct`, `disk_total_gb`, `disk_used_gb`, `disk_pct`, `bmc_type`, `bmc_ip`, `bmc_firmware`
+`ip`, `hostname`, `os`, `kernel`, `form_factor`, `manufacturer`, `model`, `serial_number`, `cpu_model`, `cpu_cores`, `memory_total_mb`, `memory_used_mb`, `disk_total_gb`, `disk_used_gb`, `pci_devices`, `bmc_type`, `bmc_ip`, `bmc_firmware`
 
 ### BMC Detection
 

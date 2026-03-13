@@ -22,9 +22,12 @@ import paramiko
 logger = logging.getLogger(__name__)
 
 CSV_COLUMNS = [
-    "ip", "hostname", "os", "kernel", "cpu_model", "cpu_cores",
-    "memory_total_mb", "memory_used_mb", "memory_pct",
-    "disk_total_gb", "disk_used_gb", "disk_pct",
+    "ip", "hostname", "os", "kernel",
+    "form_factor", "manufacturer", "model", "serial_number",
+    "cpu_model", "cpu_cores",
+    "memory_total_mb", "memory_used_mb",
+    "disk_total_gb", "disk_used_gb",
+    "pci_devices",
     "bmc_type", "bmc_ip", "bmc_firmware",
 ]
 
@@ -169,11 +172,75 @@ def parse_disk(raw):
     return "N/A", "N/A"
 
 
-def calc_pct(used, total):
-    """Calculate percentage, handling N/A values."""
-    if isinstance(used, int) and isinstance(total, int) and total > 0:
-        return round(used / total * 100, 1)
-    return "N/A"
+
+def detect_form_factor(client):
+    """Detect if the system is physical or virtual.
+
+    Checks multiple indicators: systemd-detect-virt, dmidecode, and
+    /sys/class/dmi for virtualization hints.
+    Returns 'Virtual (<hypervisor>)' or 'Physical'.
+    """
+    # systemd-detect-virt is the most reliable
+    virt = ssh_exec(client, "systemd-detect-virt 2>/dev/null")
+    if virt and virt != "none":
+        return f"Virtual ({virt})"
+
+    # Check dmidecode system product for common VM strings
+    product = ssh_exec(client, "sudo dmidecode -s system-product-name 2>/dev/null")
+    if not product:
+        product = ssh_exec(client, "dmidecode -s system-product-name 2>/dev/null")
+    product_lower = product.lower()
+    for vm_hint, name in [
+        ("vmware", "VMware"), ("virtualbox", "VirtualBox"),
+        ("kvm", "KVM"), ("qemu", "QEMU"), ("xen", "Xen"),
+        ("hyper-v", "Hyper-V"), ("microsoft", "Hyper-V"),
+    ]:
+        if vm_hint in product_lower:
+            return f"Virtual ({name})"
+
+    return "Physical"
+
+
+def gather_system_info(client):
+    """Gather manufacturer, model, and serial via dmidecode."""
+    result = {"manufacturer": "N/A", "model": "N/A", "serial_number": "N/A"}
+
+    for key, dmi_string in [
+        ("manufacturer", "system-manufacturer"),
+        ("model", "system-product-name"),
+        ("serial_number", "system-serial-number"),
+    ]:
+        val = ssh_exec(client, f"sudo dmidecode -s {dmi_string} 2>/dev/null")
+        if not val:
+            val = ssh_exec(client, f"dmidecode -s {dmi_string} 2>/dev/null")
+        if val and val.lower() not in ("", "not specified", "to be filled by o.e.m."):
+            result[key] = val
+
+    return result
+
+
+def gather_pci_devices(client):
+    """Get a summary of PCI devices via lspci.
+
+    Returns a semicolon-separated list of unique device descriptions.
+    """
+    raw = ssh_exec(client, "lspci -mm 2>/dev/null")
+    if not raw:
+        return "N/A"
+
+    devices = []
+    for line in raw.splitlines():
+        # lspci -mm format: Slot "Class" "Vendor" "Device" ...
+        parts = line.split('"')
+        if len(parts) >= 6:
+            dev_class = parts[1]
+            vendor = parts[3]
+            device = parts[5]
+            entry = f"{vendor} {device} ({dev_class})"
+            if entry not in devices:
+                devices.append(entry)
+
+    return "; ".join(devices) if devices else "N/A"
 
 
 def gather_bmc_info(client):
@@ -310,6 +377,13 @@ def gather_host_info(ip, username, key_path, timeout):
         # Kernel
         info["kernel"] = ssh_exec(client, "uname -r") or "N/A"
 
+        # Form factor (physical vs virtual)
+        info["form_factor"] = detect_form_factor(client)
+
+        # System info (manufacturer, model, serial)
+        sys_info = gather_system_info(client)
+        info.update(sys_info)
+
         # CPU
         cpu_raw = ssh_exec(client, "grep -m1 'model name' /proc/cpuinfo 2>/dev/null")
         info["cpu_model"] = parse_cpu_model(cpu_raw)
@@ -320,12 +394,13 @@ def gather_host_info(ip, username, key_path, timeout):
         info["memory_total_mb"] = parse_mem_total(mem_raw)
         free_raw = ssh_exec(client, "free -m 2>/dev/null")
         info["memory_used_mb"] = parse_mem_used(free_raw)
-        info["memory_pct"] = calc_pct(info["memory_used_mb"], info["memory_total_mb"])
 
         # Disk
         disk_raw = ssh_exec(client, "df -BG --total 2>/dev/null")
         info["disk_total_gb"], info["disk_used_gb"] = parse_disk(disk_raw)
-        info["disk_pct"] = calc_pct(info["disk_used_gb"], info["disk_total_gb"])
+
+        # PCI devices
+        info["pci_devices"] = gather_pci_devices(client)
 
         # BMC (iLO/iDRAC)
         bmc = gather_bmc_info(client)
@@ -356,12 +431,12 @@ def print_summary_table(results):
     table_cols = [
         ("IP",       "ip",              15, "<"),
         ("Hostname", "hostname",        20, "<"),
+        ("Form",     "form_factor",     18, "<"),
+        ("Model",    "model",           20, "<"),
         ("OS",       "os",              25, "<"),
         ("CPU",      "cpu_cores",        4, ">"),
         ("Mem (MB)", "memory_total_mb",  9, ">"),
-        ("Mem %",    "memory_pct",       6, ">"),
         ("Disk (GB)","disk_total_gb",   10, ">"),
-        ("Disk %",   "disk_pct",         6, ">"),
         ("BMC",      "bmc_type",         5, "<"),
         ("BMC IP",   "bmc_ip",          15, "<"),
     ]
