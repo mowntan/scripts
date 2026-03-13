@@ -38,7 +38,8 @@ def parse_args():
     )
     parser.add_argument(
         "network",
-        help="Target network in CIDR notation (e.g. 192.168.1.0/24 or 10.0.1.5/32)",
+        nargs="+",
+        help="Target network(s) in CIDR notation (e.g. 192.168.1.0/24 10.0.5.0/24 10.0.1.5/32)",
     )
     parser.add_argument(
         "--user", "-u",
@@ -474,36 +475,43 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    # Validate network
-    try:
-        network = ipaddress.IPv4Network(args.network, strict=False)
-    except ValueError as e:
-        logger.error("Invalid network: %s", e)
-        sys.exit(1)
-
-    if network.prefixlen not in (24, 32):
-        logger.error("Only /24 and /32 networks are supported (got /%d)", network.prefixlen)
-        sys.exit(1)
+    # Validate networks
+    networks = []
+    for net_arg in args.network:
+        try:
+            network = ipaddress.IPv4Network(net_arg, strict=False)
+        except ValueError as e:
+            logger.error("Invalid network %s: %s", net_arg, e)
+            sys.exit(1)
+        if network.prefixlen not in (24, 32):
+            logger.error("Only /24 and /32 networks are supported (got /%d from %s)",
+                         network.prefixlen, net_arg)
+            sys.exit(1)
+        networks.append(network)
 
     # Validate SSH key exists
     if not os.path.isfile(args.key):
         logger.warning("SSH key not found at %s — will rely on SSH agent", args.key)
 
-    # Phase 1: Discover live hosts
-    live_hosts = discover_live_hosts(network, timeout=2, max_workers=args.workers)
+    # Phase 1: Discover live hosts across all networks
+    all_live_hosts = []
+    for network in networks:
+        live = discover_live_hosts(network, timeout=2, max_workers=args.workers)
+        all_live_hosts.extend(live)
 
-    if not live_hosts:
+    if not all_live_hosts:
         logger.info("No live hosts found. Exiting.")
         sys.exit(0)
 
-    print(f"\nDiscovered {len(live_hosts)} live hosts. Gathering system info...\n")
+    print(f"\nDiscovered {len(all_live_hosts)} live hosts across "
+          f"{len(networks)} network(s). Gathering system info...\n")
 
     # Phase 2: Gather info from each host in parallel
     results = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(gather_host_info, ip, args.user, args.key, args.timeout): ip
-            for ip in live_hosts
+            for ip in all_live_hosts
         }
         for future in as_completed(futures):
             ip = futures[future]
@@ -522,9 +530,12 @@ def main():
     if args.output:
         output_path = args.output
     else:
-        net_str = str(network.network_address).replace(".", "-")
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = f"discovery_{net_str}_{date_str}.csv"
+        if len(networks) == 1:
+            net_str = str(networks[0].network_address).replace(".", "-")
+            output_path = f"discovery_{net_str}_{date_str}.csv"
+        else:
+            output_path = f"discovery_multi_{date_str}.csv"
 
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
