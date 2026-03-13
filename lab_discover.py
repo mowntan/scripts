@@ -308,6 +308,57 @@ def gather_host_info(ip, username, key_path, timeout):
     return info
 
 
+def truncate(value, width):
+    """Truncate a string to fit within width, adding ellipsis if needed."""
+    s = str(value)
+    if len(s) <= width:
+        return s
+    return s[:width - 1] + "\u2026"
+
+
+def print_summary_table(results):
+    """Print a formatted summary table of discovery results."""
+    if not results:
+        return
+
+    # Define table columns: (header, data key, width, align)
+    table_cols = [
+        ("IP",       "ip",              15, "<"),
+        ("Hostname", "hostname",        20, "<"),
+        ("OS",       "os",              25, "<"),
+        ("CPU",      "cpu_cores",        4, ">"),
+        ("Mem (MB)", "memory_total_mb",  9, ">"),
+        ("Mem %",    "memory_pct",       6, ">"),
+        ("Disk (GB)","disk_total_gb",   10, ">"),
+        ("Disk %",   "disk_pct",         6, ">"),
+        ("BMC",      "bmc_type",         5, "<"),
+        ("BMC IP",   "bmc_ip",          15, "<"),
+    ]
+
+    # Header
+    header = ""
+    sep = ""
+    for name, _, width, align in table_cols:
+        header += f"  {name:{align}{width}}"
+        sep += f"  {'-' * width}"
+
+    print(f"\n{'=' * len(sep)}")
+    print("  DISCOVERY RESULTS")
+    print(f"{'=' * len(sep)}")
+    print(header)
+    print(sep)
+
+    # Rows
+    for row in results:
+        line = ""
+        for _, key, width, align in table_cols:
+            val = truncate(row.get(key, "N/A"), width)
+            line += f"  {val:{align}{width}}"
+        print(line)
+
+    print(f"{'=' * len(sep)}\n")
+
+
 def main():
     args = parse_args()
 
@@ -374,11 +425,14 @@ def main():
         writer.writeheader()
         writer.writerows(results)
 
+    # Summary table
+    print_summary_table(results)
+
     # Summary
     accessible = sum(1 for r in results if r["hostname"] != "N/A")
     bmc_found = sum(1 for r in results if r["bmc_type"] != "N/A")
 
-    print(f"\nResults written to {output_path}")
+    print(f"Results written to {output_path}")
     print(f"  Total live hosts: {len(results)}")
     print(f"  SSH accessible:   {accessible}")
     print(f"  BMC detected:     {bmc_found}")
