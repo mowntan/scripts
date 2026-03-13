@@ -254,7 +254,7 @@ def gather_host_info(ip, username, key_path, timeout):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-    # Disable SHA1-based algorithms that fail on FIPS / newer OpenSSL
+    # Try SHA2-only first, fall back to allowing SHA1 for older hosts
     disabled_algorithms = {
         "keys": ["ssh-rsa", "ssh-dss"],
         "kex": [
@@ -264,21 +264,38 @@ def gather_host_info(ip, username, key_path, timeout):
         ],
     }
 
+    connect_kwargs = dict(
+        hostname=ip,
+        username=username,
+        key_filename=key_path,
+        timeout=timeout,
+        auth_timeout=timeout,
+        look_for_keys=True,
+        allow_agent=True,
+    )
+
     try:
-        client.connect(
-            ip,
-            username=username,
-            key_filename=key_path,
-            timeout=timeout,
-            auth_timeout=timeout,
-            look_for_keys=True,
-            allow_agent=True,
-            disabled_algorithms=disabled_algorithms,
-        )
+        client.connect(**connect_kwargs, disabled_algorithms=disabled_algorithms)
+    except paramiko.SSHException as e:
+        if "incompatible" in str(e).lower() or "no acceptable" in str(e).lower():
+            logger.debug("SHA2 negotiation failed for %s, retrying with SHA1", ip)
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            try:
+                client.connect(**connect_kwargs)
+            except paramiko.AuthenticationException:
+                logger.warning("Authentication failed for %s — skipping", ip)
+                return info
+            except (paramiko.SSHException, socket.timeout, OSError) as e2:
+                logger.warning("SSH connection failed for %s: %s — skipping", ip, e2)
+                return info
+        else:
+            logger.warning("SSH connection failed for %s: %s — skipping", ip, e)
+            return info
     except paramiko.AuthenticationException:
         logger.warning("Authentication failed for %s — skipping", ip)
         return info
-    except (paramiko.SSHException, socket.timeout, OSError) as e:
+    except (socket.timeout, OSError) as e:
         logger.warning("SSH connection failed for %s: %s — skipping", ip, e)
         return info
 
