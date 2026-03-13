@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Lab network discovery script.
+"""Network discovery script.
 
-Scans a /24 network, connects via SSH to live hosts, and gathers
+Scans a /24 network or single host (/32), connects via SSH to live hosts, and gathers
 system information including hostname, CPU, memory, disk, and
 BMC (iLO/iDRAC) details. Outputs CSV for Google Sheets import.
 """
@@ -35,7 +35,7 @@ def parse_args():
     )
     parser.add_argument(
         "network",
-        help="Target network in CIDR notation (e.g. 192.168.1.0/24)",
+        help="Target network in CIDR notation (e.g. 192.168.1.0/24 or 10.0.1.5/32)",
     )
     parser.add_argument(
         "--user", "-u",
@@ -85,7 +85,10 @@ def ping_host(ip, timeout=2):
 
 def discover_live_hosts(network, timeout=2, max_workers=50):
     """Ping sweep a /24 network and return list of responding IPs."""
-    hosts = [str(ip) for ip in network.hosts()]
+    if network.prefixlen == 32:
+        hosts = [str(network.network_address)]
+    else:
+        hosts = [str(ip) for ip in network.hosts()]
     live = []
     logger.info("Ping sweeping %s (%d hosts)...", network, len(hosts))
 
@@ -375,8 +378,8 @@ def main():
         logger.error("Invalid network: %s", e)
         sys.exit(1)
 
-    if network.prefixlen != 24:
-        logger.error("Only /24 networks are supported (got /%d)", network.prefixlen)
+    if network.prefixlen not in (24, 32):
+        logger.error("Only /24 and /32 networks are supported (got /%d)", network.prefixlen)
         sys.exit(1)
 
     # Validate SSH key exists
